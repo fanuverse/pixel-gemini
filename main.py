@@ -7,13 +7,16 @@ Commands:
   /check_offer  – Run Google One automation and look for Gemini Pro offer
   /get_link     – Show the last captured offer link
   /status       – Show current session status and device profile
+  /cancel       – Cancel current operation
 """
 
+import asyncio
+import html
 import logging
-import os
 import sys
 
-from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
+from telegram import Update, ReplyKeyboardRemove
+from telegram.constants import ParseMode
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -46,28 +49,32 @@ def _get_session(chat_id: int) -> dict:
 
 # ── Handlers ──────────────────────────────────────────────────────────────────
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Send welcome message with command menu."""
-    await update.message.reply_text(
-        "🤖 *Pixel 10 Pro Google One Bot*\n\n"
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Send welcome message with command menu and reset any pending conversation."""
+    context.user_data.pop("pending_email", None)
+    
+    welcome_text = (
+        "🤖 <b>Pixel 10 Pro Google One Bot</b>\n\n"
         "This bot simulates a Google Pixel 10 Pro (Android 16) device, "
-        "logs into your Google account, and retrieves the *12-month free "
-        "Gemini Pro* offer link from Google One.\n\n"
-        "📋 *Available Commands:*\n"
+        "logs into your Google account, and retrieves the <b>12-month free "
+        "Gemini Pro</b> offer link from Google One.\n\n"
+        "📋 <b>Available Commands:</b>\n"
         "• /login – Enter your Gmail credentials\n"
-        "• /check\\_offer – Detect the Gemini Pro offer\n"
-        "• /get\\_link – Show the last captured offer link\n"
-        "• /status – View current session & device info\n\n"
-        "⚠️ *Privacy Note:* Credentials are held in memory only for the "
-        "duration of the session and never stored persistently.",
-        parse_mode="Markdown",
+        "• /check_offer – Detect the Gemini Pro offer\n"
+        "• /get_link – Show the last captured offer link\n"
+        "• /status – View current session & device info\n"
+        "• /cancel – Cancel current input\n\n"
+        "⚠️ <b>Privacy Note:</b> Credentials are held in memory only for the "
+        "duration of the session and never stored persistently."
     )
+    
+    await update.message.reply_text(welcome_text, parse_mode=ParseMode.HTML)
+    return ConversationHandler.END
 
 
 # ── /login conversation ───────────────────────────────────────────────────────
 
-async def login_start(update: Update,
-                      context: ContextTypes.DEFAULT_TYPE) -> int:
+async def login_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Begin the login conversation – ask for email."""
     await update.message.reply_text(
         "📧 Please enter your Gmail address:",
@@ -76,20 +83,19 @@ async def login_start(update: Update,
     return AWAIT_EMAIL
 
 
-async def login_email(update: Update,
-                      context: ContextTypes.DEFAULT_TYPE) -> int:
+async def login_email(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Store the email and ask for password."""
     email = update.message.text.strip()
     context.user_data["pending_email"] = email
+    
     await update.message.reply_text(
-        f"✅ Email received: `{email}`\n\n🔒 Now enter your password:",
-        parse_mode="Markdown",
+        f"✅ Email received: <code>{html.escape(email)}</code>\n\n🔒 Now enter your password:",
+        parse_mode=ParseMode.HTML,
     )
     return AWAIT_PASSWORD
 
 
-async def login_password(update: Update,
-                         context: ContextTypes.DEFAULT_TYPE) -> int:
+async def login_password(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Store credentials, generate a new device profile, and finish."""
     chat_id = update.effective_chat.id
     password = update.message.text.strip()
@@ -101,31 +107,32 @@ async def login_password(update: Update,
     session["device"] = create_device_profile()
     session["offer_link"] = None
 
-    # Delete the message containing the password for security
+    # Delete the user's password message for security
     try:
         await update.message.delete()
     except Exception:
         pass
 
+    summary_text = html.escape(session["device"].summary())
+
     await context.bot.send_message(
         chat_id=chat_id,
         text=(
-            "✅ *Credentials saved* and a new Pixel 10 Pro device profile has "
+            "✅ <b>Credentials saved</b> and a new Pixel 10 Pro device profile has "
             "been created for this session.\n\n"
-            + session["device"].summary()
-            + "\n\nUse /check\\_offer to search for the Gemini Pro offer."
+            f"<pre>{summary_text}</pre>\n\n"
+            "Use /check_offer to search for the Gemini Pro offer."
         ),
-        parse_mode="Markdown",
+        parse_mode=ParseMode.HTML,
     )
     return ConversationHandler.END
 
 
-async def login_cancel(update: Update,
-                       context: ContextTypes.DEFAULT_TYPE) -> int:
+async def login_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Cancel the login conversation."""
     context.user_data.pop("pending_email", None)
     await update.message.reply_text(
-        "❌ Login cancelled.",
+        "❌ Operation cancelled.",
         reply_markup=ReplyKeyboardRemove(),
     )
     return ConversationHandler.END
@@ -133,8 +140,7 @@ async def login_cancel(update: Update,
 
 # ── /check_offer ──────────────────────────────────────────────────────────────
 
-async def check_offer(update: Update,
-                      context: ContextTypes.DEFAULT_TYPE) -> None:
+async def check_offer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Run Google One automation and report the result."""
     chat_id = update.effective_chat.id
     session = _get_session(chat_id)
@@ -150,35 +156,42 @@ async def check_offer(update: Update,
         device = create_device_profile()
         session["device"] = device
 
-    await update.message.reply_text(
+    status_msg = await update.message.reply_text(
         "⏳ Launching Pixel 10 Pro device simulator and logging in…\n"
         "This may take up to 60 seconds."
     )
 
     try:
-        offer_link = check_gemini_offer(
+        # Offload synchronous browser automation to background thread
+        offer_link = await asyncio.to_thread(
+            check_gemini_offer,
             session["email"],
             session["password"],
             device,
         )
     except GoogleAutomationError as exc:
-        await update.message.reply_text(f"❌ *Error:* {exc}", parse_mode="Markdown")
+        await update.message.reply_text(
+            f"❌ <b>Automation Error:</b> {html.escape(str(exc))}",
+            parse_mode=ParseMode.HTML
+        )
         return
     except Exception as exc:
         logger.exception("Unexpected error in check_offer for chat %s", chat_id)
         await update.message.reply_text(
-            f"❌ An unexpected error occurred: {exc}"
+            f"❌ <b>Unexpected error:</b> {html.escape(str(exc))}",
+            parse_mode=ParseMode.HTML
         )
         return
 
     if offer_link:
         session["offer_link"] = offer_link
         await update.message.reply_text(
-            "🎉 *Gemini Pro Offer Found!*\n\n"
+            "🎉 <b>Gemini Pro Offer Found!</b>\n\n"
             "Click the link below to activate your 12-month free Gemini Pro:\n\n"
-            f"🔗 {offer_link}\n\n"
-            "_Use /get\\_link to retrieve this link again._",
-            parse_mode="Markdown",
+            f"🔗 <a href='{offer_link}'>{html.escape(offer_link)}</a>\n\n"
+            "<i>Use /get_link to retrieve this link again.</i>",
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=False,
         )
     else:
         await update.message.reply_text(
@@ -191,8 +204,7 @@ async def check_offer(update: Update,
 
 # ── /get_link ─────────────────────────────────────────────────────────────────
 
-async def get_link(update: Update,
-                   context: ContextTypes.DEFAULT_TYPE) -> None:
+async def get_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Return the last captured offer link for this session."""
     chat_id = update.effective_chat.id
     session = _get_session(chat_id)
@@ -200,21 +212,21 @@ async def get_link(update: Update,
 
     if link:
         await update.message.reply_text(
-            f"🔗 *Last captured offer link:*\n\n{link}",
-            parse_mode="Markdown",
+            f"🔗 <b>Last captured offer link:</b>\n\n"
+            f"<a href='{link}'>{html.escape(link)}</a>",
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=False,
         )
     else:
         await update.message.reply_text(
             "ℹ️ No offer link has been captured yet. "
-            "Use /check\\_offer to search for the Gemini Pro offer.",
-            parse_mode="Markdown",
+            "Use /check_offer to search for the Gemini Pro offer."
         )
 
 
 # ── /status ───────────────────────────────────────────────────────────────────
 
-async def status(update: Update,
-                 context: ContextTypes.DEFAULT_TYPE) -> None:
+async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Show current session and device profile summary."""
     chat_id = update.effective_chat.id
     session = _get_session(chat_id)
@@ -231,18 +243,18 @@ async def status(update: Update,
     device = session.get("device")
 
     lines = [
-        "📊 *Session Status*\n",
-        f"Account: `{email}`",
+        "📊 <b>Session Status</b>\n",
+        f"Account: <code>{html.escape(email)}</code>",
         f"Credentials loaded: {'✅' if has_creds else '❌'}",
         f"Offer link captured: {'✅' if offer_link else '❌'}",
     ]
 
     if device:
-        lines.append("\n" + device.summary())
+        lines.append(f"\n<pre>{html.escape(device.summary())}</pre>")
 
     await update.message.reply_text(
         "\n".join(lines),
-        parse_mode="Markdown",
+        parse_mode=ParseMode.HTML,
     )
 
 
@@ -259,7 +271,7 @@ def main() -> None:
 
     app = Application.builder().token(token).build()
 
-    # /login conversation
+    # /login conversation handler with cancel and start fallbacks
     login_conv = ConversationHandler(
         entry_points=[CommandHandler("login", login_start)],
         states={
@@ -270,7 +282,10 @@ def main() -> None:
                 MessageHandler(filters.TEXT & ~filters.COMMAND, login_password)
             ],
         },
-        fallbacks=[CommandHandler("cancel", login_cancel)],
+        fallbacks=[
+            CommandHandler("cancel", login_cancel),
+            CommandHandler("start", start),
+        ],
     )
 
     app.add_handler(CommandHandler("start", start))
@@ -278,6 +293,7 @@ def main() -> None:
     app.add_handler(CommandHandler("check_offer", check_offer))
     app.add_handler(CommandHandler("get_link", get_link))
     app.add_handler(CommandHandler("status", status))
+    app.add_handler(CommandHandler("cancel", login_cancel))
 
     logger.info("Bot is running. Press Ctrl-C to stop.")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
