@@ -7,19 +7,23 @@ import os
 # ── Telegram ──────────────────────────────────────────────────────────────────
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 
-# ── Device specs – Google Pixel 10 Pro (Android 16) ──────────────────────────
+# ── Device specs – Google Pixel 10 Pro (blazer) ──────────────────────────────
 DEVICE_MODEL = "Pixel 10 Pro"
+DEVICE_CODENAME = "blazer"
 DEVICE_BRAND = "google"
 DEVICE_MANUFACTURER = "Google"
-ANDROID_VERSION = "16"
-ANDROID_SDK = "36"
-BUILD_ID = "AP4A.250405.002"
-CHROME_VERSION = "124.0.6367.82"
-CHROME_MAJOR_VERSION = 124
+ANDROID_VERSION = "17"
+ANDROID_SDK = "37"
+BUILD_ID = "CP2A.260805.005"
+INCREMENTAL = "15828068"
+SECURITY_PATCH = "2026-08-05"
+DEVICE_FINGERPRINT = "google/blazer/blazer:17/CP2A.260805.005/15828068:user/release-keys"
 
-# Pool of realistic Pixel 10 Pro user-agent strings.
-# The actual UA is assembled dynamically in device_simulator.py by
-# substituting the per-session Chrome version patch suffix.
+# Browser Version
+CHROME_MAJOR_VERSION = 138
+CHROME_VERSION = "138.0.7204.98"
+
+# User-Agent templates
 USER_AGENT_TEMPLATES = [
     (
         "Mozilla/5.0 (Linux; Android {android}; {model} Build/{build}; wv) "
@@ -34,32 +38,39 @@ USER_AGENT_TEMPLATES = [
 ]
 
 # ── Google URLs ───────────────────────────────────────────────────────────────
-GMAIL_LOGIN_URL = "https://accounts.google.com/signin/v2/identifier"
-GOOGLE_ONE_URL = "https://one.google.com/"
-GOOGLE_ONE_OFFERS_URL = "https://one.google.com/about/plans"
+GMAIL_LOGIN_URL = (
+    "https://accounts.google.com/ServiceLogin?"
+    "service=accountsettings&continue=https://myaccount.google.com/"
+)
+GOOGLE_ONE_URL = "https://one.google.com/home"
+GOOGLE_ONE_OFFERS_URL = "https://one.google.com/benefits"
+GOOGLE_ONE_PLANS_URL = "https://one.google.com/about/plans"
 
 # ── Gemini offer detection keywords ──────────────────────────────────────────
 GEMINI_OFFER_KEYWORDS = [
     "gemini pro",
     "gemini advanced",
+    "ai premium",
     "12 month",
     "12-month",
+    "1 year",
     "free trial",
     "activate",
-    "get started",
     "claim offer",
     "redeem",
+    "get offer",
+    "pixel offer",
 ]
 
 # ── Selenium / WebDriver ──────────────────────────────────────────────────────
 WEBDRIVER_TIMEOUT = 30          # seconds – explicit wait
-IMPLICIT_WAIT = 10              # seconds
-PAGE_LOAD_TIMEOUT = 60          # seconds
+IMPLICIT_WAIT = 5               # seconds
+PAGE_LOAD_TIMEOUT = 45          # seconds
 HEADLESS = True                 # always headless on Replit
+CHROME_BIN = os.environ.get("CHROME_BIN", "")
 
 # ── Session storage ───────────────────────────────────────────────────────────
-# In-memory dict keyed by Telegram chat_id.
-# Values: {"email": ..., "password": ..., "device": <DeviceProfile>, "offer_link": ...}
+# In-memory dictionary keyed by Telegram chat_id
 SESSION_STORE: dict = {}
 
 # ── Logging ───────────────────────────────────────────────────────────────────
