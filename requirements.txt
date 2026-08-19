@@ -1,8 +1,9 @@
-# Core bot framework
-python-telegram-bot==21.3
+# Core bot framework (async v21+)
+python-telegram-bot[job-queue]>=21.3
 
-# Browser automation
-selenium==4.21.0
+# Browser automation (includes native driver manager)
+selenium>=4.21.0
 
-# WebDriver management (auto-downloads matching chromedriver)
-webdriver-manager==4.0.1
+# HTTP utilities & environment variables
+requests>=2.31.0
+python-dotenv>=1.0.0
