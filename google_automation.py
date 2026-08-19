@@ -1,15 +1,16 @@
 """
-Google One automation using Selenium.
+Google One automation using Selenium with CDP Stealth & Pixel 10 Pro Emulation.
 
 Logs into a Gmail account, navigates to Google One, detects the
-12-month free Gemini Pro offer, and returns the activation / payment link.
+12-month free Gemini Pro / AI Premium offer, and returns the activation link.
 """
 
 import logging
-import time
+import os
 import re
-from urllib.parse import urlparse
+import time
 from typing import Optional
+from urllib.parse import urlparse
 
 from selenium import webdriver
 from selenium.common.exceptions import (
@@ -32,45 +33,76 @@ logger = logging.getLogger(__name__)
 # ── Driver factory ────────────────────────────────────────────────────────────
 
 def _build_driver(profile: DeviceProfile) -> webdriver.Chrome:
-    """Return a headless Chrome WebDriver configured for the device profile."""
+    """Return a hardened, stealth-patched Chrome WebDriver for Pixel 10 Pro."""
     options = Options()
 
-    if config.HEADLESS:
+    if getattr(config, "HEADLESS", True):
         options.add_argument("--headless=new")
 
+    # Cloud / Replit stability arguments
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-gpu")
     options.add_argument("--disable-extensions")
     options.add_argument("--disable-infobars")
     options.add_argument("--disable-notifications")
-    options.add_argument("--window-size=390,844")  # Pixel 10 Pro screen size
+    options.add_argument("--window-size=412,915")
     options.add_argument(f"--user-agent={profile.user_agent}")
 
-    # Mobile emulation – Pixel 10 Pro viewport
-    mobile_emulation = {
-        "deviceMetrics": {"width": 390, "height": 844, "pixelRatio": 3.0},
-        "userAgent": profile.user_agent,
-    }
-    options.add_experimental_option("mobileEmulation", mobile_emulation)
+    # Replit / Linux binary support
+    chrome_bin = os.environ.get("CHROME_BIN") or getattr(config, "CHROME_BIN", None)
+    if chrome_bin and os.path.exists(chrome_bin):
+        options.binary_location = chrome_bin
 
-    # Suppress automation flags
+    # Anti-bot detection switches
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option("useAutomationExtension", False)
     options.add_argument("--disable-blink-features=AutomationControlled")
 
-    service = Service()  # relies on chromedriver being on PATH (Replit provides it)
+    service = Service()
     driver = webdriver.Chrome(service=service, options=options)
-    driver.implicitly_wait(config.IMPLICIT_WAIT)
-    driver.set_page_load_timeout(config.PAGE_LOAD_TIMEOUT)
+
+    # ── CDP Stealth & Client Hints Injection ──────────────────────────────────
+    # 1. Enable Network and inject Pixel 10 Pro Client Hints
+    driver.execute_cdp_cmd("Network.enable", {})
+    driver.execute_cdp_cmd("Network.setUserAgentOverride", profile.emulation_params())
+
+    # 2. Patch navigator to evade "This browser or app may not be secure"
+    driver.execute_cdp_cmd(
+        "Page.addScriptToEvaluateOnNewDocument",
+        {
+            "source": """
+                Object.defineProperty(navigator, 'webdriver', {
+                    get: () => undefined
+                });
+                window.chrome = {
+                    runtime: {},
+                    loadTimes: function() {},
+                    csi: function() {},
+                    app: {}
+                };
+                Object.defineProperty(navigator, 'plugins', {
+                    get: () => [1, 2, 3, 4, 5]
+                });
+                Object.defineProperty(navigator, 'languages', {
+                    get: () => ['en-US', 'en']
+                });
+                Object.defineProperty(navigator, 'maxTouchPoints', {
+                    get: () => 5
+                });
+            """
+        },
+    )
+
+    driver.implicitly_wait(getattr(config, "IMPLICIT_WAIT", 5))
+    driver.set_page_load_timeout(getattr(config, "PAGE_LOAD_TIMEOUT", 30))
     return driver
 
 
 # ── Login helper ──────────────────────────────────────────────────────────────
 
-def _wait_for(driver: webdriver.Chrome, by: str, value: str,
-               timeout: int = config.WEBDRIVER_TIMEOUT) -> object:
-    """Return element after waiting for it to be clickable."""
+def _wait_for(driver: webdriver.Chrome, by: str, value: str, timeout: int = 15) -> object:
+    """Return element after waiting for it to become visible and clickable."""
     return WebDriverWait(driver, timeout).until(
         EC.element_to_be_clickable((by, value))
     )
@@ -78,72 +110,86 @@ def _wait_for(driver: webdriver.Chrome, by: str, value: str,
 
 def _gmail_login(driver: webdriver.Chrome, email: str, password: str) -> bool:
     """
-    Perform Gmail / Google account login.
-
-    Returns True on apparent success, False on detectable failure.
+    Perform Google account login with stealth and 2FA detection.
     """
+    login_url = getattr(
+        config,
+        "GMAIL_LOGIN_URL",
+        "https://accounts.google.com/ServiceLogin?service=accountsettings&continue=https://myaccount.google.com/",
+    )
+
     try:
-        driver.get(config.GMAIL_LOGIN_URL)
+        logger.info("Opening Google login page...")
+        driver.get(login_url)
         time.sleep(2)
 
-        # ── Email step ────────────────────────────────────────────────────────
-        email_field = _wait_for(driver, By.CSS_SELECTOR,
-                                'input[type="email"]')
+        # ── Email Step ────────────────────────────────────────────────────────
+        email_field = _wait_for(driver, By.CSS_SELECTOR, 'input[type="email"]')
         email_field.clear()
         email_field.send_keys(email)
+        time.sleep(1)
 
         next_btn = _wait_for(driver, By.ID, "identifierNext")
         next_btn.click()
-        time.sleep(2)
+        time.sleep(3)
 
-        # ── Password step ─────────────────────────────────────────────────────
-        password_field = _wait_for(driver, By.CSS_SELECTOR,
-                                   'input[type="password"]')
+        # ── Password Step ─────────────────────────────────────────────────────
+        password_field = _wait_for(
+            driver, By.CSS_SELECTOR, 'input[type="password"], input[name="Passwd"]'
+        )
         password_field.clear()
         password_field.send_keys(password)
+        time.sleep(1)
 
         pw_next = _wait_for(driver, By.ID, "passwordNext")
         pw_next.click()
-        time.sleep(3)
+        time.sleep(4)
 
-        # ── Verify login ──────────────────────────────────────────────────────
-        current_url = driver.current_url
-        parsed = urlparse(current_url)
-        hostname = parsed.hostname or ""
-        path = parsed.path or ""
-        if (
-            hostname == "myaccount.google.com"
-            or hostname.endswith(".google.com")
-            and "/u/" in path
-        ):
-            logger.info("Login succeeded for %s", email)
-            return True
+        # ── Check for 2FA / Verification Challenge ───────────────────────────
+        # Wait up to 30s in case Google prompts the user to tap "Yes" on phone
+        start_wait = time.time()
+        while time.time() - start_wait < 30:
+            current_url = driver.current_url
+            parsed = urlparse(current_url)
+            hostname = parsed.hostname or ""
+            path = parsed.path or ""
 
-        # Check for error messages
-        try:
-            error_el = driver.find_element(
-                By.CSS_SELECTOR, '[jsname="B34EJ"], [aria-live="assertive"]'
-            )
-            if error_el.text:
-                logger.warning("Login error detected: %s", error_el.text)
-                return False
-        except NoSuchElementException:
-            pass
+            # Logged in successfully
+            if (
+                hostname == "myaccount.google.com"
+                or (hostname.endswith(".google.com") and "/u/" in path)
+                or "one.google.com" in hostname
+            ):
+                logger.info("Login succeeded for %s", email)
+                return True
 
-        # If we're no longer on the login page, assume success
-        if not (
-            hostname == "accounts.google.com"
-            and path.startswith("/signin")
-        ):
-            logger.info("Login appeared successful for %s (URL: %s)",
-                        email, current_url)
-            return True
+            # If user is on a challenge screen, log and wait for approval
+            if "challenge" in path or "signin/v2/challenge" in current_url:
+                logger.info("2FA / Security challenge detected. Waiting for approval on user's device...")
+                time.sleep(3)
+                continue
 
-        logger.warning("Unexpected URL after login: %s", current_url)
+            # Check for explicit error message
+            try:
+                error_el = driver.find_element(
+                    By.CSS_SELECTOR, '[jsname="B34EJ"], [aria-live="assertive"], .o6cuMc'
+                )
+                if error_el.text:
+                    logger.warning("Google login rejected: %s", error_el.text)
+                    return False
+            except NoSuchElementException:
+                pass
+
+            # If redirected away from signin flow, consider logged in
+            if not (hostname == "accounts.google.com" and path.startswith("/signin")):
+                return True
+
+            time.sleep(2)
+
         return False
 
     except TimeoutException as exc:
-        logger.error("Timeout during login: %s", exc)
+        logger.error("Timeout during Google login: %s", exc)
         return False
     except WebDriverException as exc:
         logger.error("WebDriver error during login: %s", exc)
@@ -154,58 +200,55 @@ def _gmail_login(driver: webdriver.Chrome, email: str, password: str) -> bool:
 
 def _extract_payment_link(driver: webdriver.Chrome) -> Optional[str]:
     """
-    Scan the current page for a Gemini Pro offer / activation link.
-
-    Strategy:
-    1. Look for anchor tags whose text or aria-label contains offer keywords.
-    2. Fall back to scanning all links for 'gemini' or 'upgrade' patterns.
-    3. Return the first matching href found.
+    Scan page for Pixel Gemini Pro / AI Premium offer or checkout URLs.
     """
-    keywords = config.GEMINI_OFFER_KEYWORDS
+    keywords = getattr(
+        config,
+        "GEMINI_OFFER_KEYWORDS",
+        ["gemini", "gemini advanced", "gemini pro", "ai premium", "12 months", "1 year", "pixel offer", "claim offer"],
+    )
 
-    # -- Strategy 1: anchor text / aria-label match ---------------------------
     all_links = driver.find_elements(By.TAG_NAME, "a")
+
+    # Strategy 1: Anchor text or aria-label keyword match
     for link in all_links:
         try:
-            text = (link.text + " " + link.get_attribute("aria-label")).lower()
+            aria = link.get_attribute("aria-label") or ""
+            text = (link.text + " " + aria).lower()
             href = link.get_attribute("href") or ""
-            if any(kw in text for kw in keywords) and href:
-                logger.info("Found offer link via text match: %s", href)
+            if any(kw in text for kw in keywords) and href and href.startswith("http"):
+                logger.info("Found offer link via text/label match: %s", href)
                 return href
         except Exception:
             continue
 
-    # -- Strategy 2: URL pattern scan -----------------------------------------
+    # Strategy 2: URL pattern match (Google One checkout / redemption URLs)
     url_patterns = re.compile(
-        r"(gemini|upgrade|activate|offer|redeem|trial|checkout)",
+        r"(one\.google\.com/promo|one\.google\.com/benefits|one\.google\.com/offer|gemini|ai-premium|redeem|checkout)",
         re.IGNORECASE,
     )
     for link in all_links:
         try:
             href = link.get_attribute("href") or ""
-            if url_patterns.search(href):
+            if url_patterns.search(href) and not href.endswith("/home"):
                 logger.info("Found offer link via URL pattern: %s", href)
                 return href
         except Exception:
             continue
 
-    # -- Strategy 3: button / CTA elements ------------------------------------
+    # Strategy 3: CTA buttons (Claim / Upgrade button)
     buttons = driver.find_elements(By.CSS_SELECTOR, "button, [role='button']")
     for btn in buttons:
         try:
             text = btn.text.lower()
             if any(kw in text for kw in keywords):
-                # Try to find parent anchor
                 try:
                     parent_link = btn.find_element(By.XPATH, "ancestor::a")
                     href = parent_link.get_attribute("href") or ""
                     if href:
-                        logger.info("Found offer link via button parent: %s", href)
                         return href
                 except NoSuchElementException:
                     pass
-                # Return current URL as fallback (user will land on offer page)
-                logger.info("Found offer CTA button on page: %s", driver.current_url)
                 return driver.current_url
         except Exception:
             continue
@@ -215,17 +258,21 @@ def _extract_payment_link(driver: webdriver.Chrome) -> Optional[str]:
 
 def _navigate_google_one(driver: webdriver.Chrome) -> Optional[str]:
     """
-    Navigate to Google One and attempt to find the Gemini Pro offer link.
-
-    Returns the payment/activation URL or None if not found.
+    Navigate to Google One endpoints to search for the promotional offer.
     """
-    for url in (config.GOOGLE_ONE_URL, config.GOOGLE_ONE_OFFERS_URL):
+    endpoints = [
+        getattr(config, "GOOGLE_ONE_OFFERS_URL", "https://one.google.com/benefits"),
+        getattr(config, "GOOGLE_ONE_URL", "https://one.google.com/home"),
+        "https://one.google.com/about/plans",
+    ]
+
+    for url in endpoints:
         try:
             logger.info("Navigating to %s", url)
             driver.get(url)
-            time.sleep(3)
+            time.sleep(4)
 
-            # Dismiss cookie/consent banners if present
+            # Dismiss consent banners if present
             for selector in (
                 '[aria-label="Accept all"]',
                 'button[jsname="higCR"]',
@@ -255,26 +302,22 @@ class GoogleAutomationError(Exception):
     """Raised when automation encounters an unrecoverable error."""
 
 
-def check_gemini_offer(email: str, password: str,
-                       device: DeviceProfile) -> Optional[str]:
+def check_gemini_offer(email: str, password: str, device: DeviceProfile) -> Optional[str]:
     """
     Main entry point.
 
-    Logs into *email* / *password* using the supplied *device* profile,
-    navigates to Google One, and returns the Gemini Pro offer link (or None).
-
-    Raises :class:`GoogleAutomationError` if the driver cannot be started or
-    the login step fails with an error.
+    Logs into Google with the device profile, searches for the Gemini promo,
+    and returns the link.
     """
     driver: Optional[webdriver.Chrome] = None
     try:
-        logger.info("Starting WebDriver for session %s", device.session_id)
+        logger.info("Starting WebDriver for session %s on model %s", device.session_id, device.model)
         driver = _build_driver(device)
 
         logged_in = _gmail_login(driver, email, password)
         if not logged_in:
             raise GoogleAutomationError(
-                "Login failed – please check your credentials."
+                "Login failed. Google may have blocked the sign-in, credentials may be incorrect, or 2FA was not approved in time."
             )
 
         offer_link = _navigate_google_one(driver)
